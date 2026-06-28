@@ -44,3 +44,7 @@ mirrors.tuna.tsinghua.edu.cn
 mirrors.aliyun.com
 mirrors.ustc.edu.cn
 mirrors.cloud.tencent.com
+zcode-ai.com
+www.zcode-ai.com
+zcode.com
+www.zcode.com
