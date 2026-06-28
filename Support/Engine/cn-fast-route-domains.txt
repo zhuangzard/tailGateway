@@ -48,3 +48,14 @@ zcode-ai.com
 www.zcode-ai.com
 zcode.com
 www.zcode.com
+z.ai
+chat.z.ai
+api.z.ai
+zcode.z.ai
+tzcode.z.ai
+cdn-zcode.z.ai
+docs.z.ai
+cdn.zcode-ai.com
+feedback.zcode-ai.com
+dev.bigmodel.cn
+docs.bigmodel.cn
