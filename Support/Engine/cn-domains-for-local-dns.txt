@@ -1,0 +1,165 @@
+# Managed by TailGateway. One suffix per line.
+#
+# macOS /etc/resolver suffixes: a file named "baidu.com" applies to
+# baidu.com and all subdomains.
+
+# China TLD
+cn
+
+# ZCode / BigModel
+z.ai
+bigmodel.cn
+zcode-ai.com
+codegeex.cn
+
+# Tencent / WeChat / QQ
+qq.com
+weixin.qq.com
+wechat.com
+gtimg.cn
+qpic.cn
+qlogo.cn
+tenpay.com
+myqcloud.com
+qcloud.com
+tencent.com
+tencent-cloud.com
+
+# Video / streaming
+bilibili.com
+bilivideo.com
+hdslb.com
+biliapi.net
+iqiyi.com
+iqiyipic.com
+qiyi.com
+youku.com
+ykimg.com
+youku-cdn.com
+douyin.com
+iesdouyin.com
+snssdk.com
+amemv.com
+ixigua.com
+huoshan.com
+mgtv.com
+hunantv.com
+le.com
+
+# ByteDance / Toutiao / Feishu
+bytedance.com
+byteimg.com
+bytecdn.cn
+bytednsdoc.com
+zijieapi.com
+zijieimg.com
+toutiao.com
+feishu.cn
+larksuite.com
+volcengine.com
+
+# Search / portals / maps
+baidu.com
+bdstatic.com
+bdimg.com
+bcebos.com
+hao123.com
+amap.com
+autonavi.com
+so.com
+360.cn
+sogou.com
+
+# Alibaba / commerce / payments
+taobao.com
+tmall.com
+alicdn.com
+aliyun.com
+aliyuncs.com
+alipay.com
+mmstat.com
+ele.me
+uc.cn
+ucweb.com
+
+# JD / PDD / Meituan
+jd.com
+jd.hk
+360buyimg.com
+jdpay.com
+pinduoduo.com
+yangkeduo.com
+pddpic.com
+meituan.com
+dianping.com
+dpfile.com
+
+# NetEase / music / mail
+163.com
+126.com
+yeah.net
+netease.com
+music.163.com
+youdao.com
+
+# Social / content
+weibo.com
+sina.com.cn
+sinaimg.cn
+zhihu.com
+zhimg.com
+xiaohongshu.com
+xhscdn.com
+douban.com
+
+# Hardware / phone vendors
+mi.com
+miui.com
+xiaomi.com
+huawei.com
+vmall.com
+hicloud.com
+oppomobile.com
+oppo.com
+vivo.com.cn
+
+# Travel / lifestyle
+ctrip.com
+trip.com
+qunar.com
+12306.cn
+damai.cn
+
+# Banks / finance / payments
+unionpay.com
+95516.com
+cmbchina.com
+icbc.com.cn
+ccb.com
+abchina.com
+boc.cn
+bankcomm.com
+
+# Developer / mirrors / tools
+gitee.com
+coding.net
+gitcode.com
+oschina.net
+csdn.net
+cnblogs.com
+segmentfault.com
+juejin.cn
+npmmirror.com
+taobao.org
+tuna.tsinghua.edu.cn
+mirrors.tuna.tsinghua.edu.cn
+mirrors.aliyun.com
+mirrors.ustc.edu.cn
+mirrors.cloud.tencent.com
+
+# DNS / connectivity checks
+alidns.com
+doh.pub
+114dns.com
+ip138.com
+ipip.net

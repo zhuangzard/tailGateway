@@ -1,0 +1,411 @@
+#!/bin/zsh
+set -u
+
+APP_SUPPORT="${TAILGATEWAY_SUPPORT_DIR:-$HOME/Library/Application Support/TailGateway}"
+HELPER_DIR="${TAILGATEWAY_ENGINE_DIR:-$APP_SUPPORT/Engine}"
+DNS_DEFAULT="${TAILGATEWAY_DNS:-223.5.5.5}"
+STATE_DIR="${TAILGATEWAY_STATE_DIR:-$APP_SUPPORT/State}"
+STATE_FILE="$STATE_DIR/last-mode"
+
+CN_APPLY="$HELPER_DIR/apply-cn-routes.zsh"
+CN_REMOVE="$HELPER_DIR/remove-cn-routes.zsh"
+APPLE_APPLY="$HELPER_DIR/apply-apple-icloud-direct.zsh"
+APPLE_REMOVE="$HELPER_DIR/remove-apple-icloud-direct.zsh"
+WECHAT_APPLY="$HELPER_DIR/apply-wechat-direct.zsh"
+WECHAT_REMOVE="$HELPER_DIR/remove-wechat-direct.zsh"
+CN_DNS_APPLY="$HELPER_DIR/apply-cn-dns-split.zsh"
+CN_DNS_REMOVE="$HELPER_DIR/remove-cn-dns-split.zsh"
+CN_DNS_DOMAINS="$HELPER_DIR/cn-domains-for-local-dns.txt"
+CN_CDN_APPLY="$HELPER_DIR/apply-cn-cdn-fallback-routes.zsh"
+CN_CDN_REMOVE="$HELPER_DIR/remove-cn-cdn-fallback-routes.zsh"
+CN_CDN_STATE="$HELPER_DIR/cn-cdn-fallback-routes.state"
+CN_CDN_DOMAINS="$HELPER_DIR/cn-fast-route-domains.txt"
+PINNED_HOSTS="$HELPER_DIR/pinned-hosts.txt"
+
+WECHAT_PREFIXES=(
+  43.129 43.130 43.155 43.159 43.163 43.168 43.174 43.175
+  101.32 101.33 124.156 129.226 157.148 157.255 203.205
+)
+
+log() {
+  print -r -- "==> $*"
+}
+
+warn() {
+  print -r -- "WARN: $*" >&2
+}
+
+die() {
+  print -r -- "ERROR: $*" >&2
+  exit 1
+}
+
+record_mode() {
+  local mode="$1"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  print -r -- "$mode" > "$STATE_FILE"
+}
+
+read_last_mode() {
+  if [[ -f "$STATE_FILE" ]]; then
+    head -1 "$STATE_FILE" | tr -d '[:space:]'
+  fi
+}
+
+detect_gateway() {
+  local gw
+
+  gw="$(netstat -rn -f inet 2>/dev/null | awk '$1=="default" && $2 ~ /^[0-9]+(\.[0-9]+){3}$/ && $NF !~ /^utun/ {print $2; exit}')"
+  if [[ -n "$gw" ]]; then
+    print -r -- "$gw"
+    return 0
+  fi
+
+  local iface
+  for iface in en0 en1 en2; do
+    gw="$(ipconfig getoption "$iface" router 2>/dev/null | head -1)"
+    if [[ "$gw" =~ '^[0-9]+(\.[0-9]+){3}$' ]]; then
+      print -r -- "$gw"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+run_helper() {
+  local script="$1"
+  shift
+
+  [[ -f "$script" ]] || die "Missing helper script: $script"
+  [[ -x "$script" ]] || chmod +x "$script" 2>/dev/null || true
+  "$script" "$@"
+}
+
+route_add_host() {
+  local ip="$1"
+  local gw="$2"
+  sudo /sbin/route -n add -host "$ip" "$gw" >/dev/null 2>&1 || true
+}
+
+route_delete_host() {
+  local ip="$1"
+  sudo /sbin/route -n delete -host "$ip" >/dev/null 2>&1 || true
+}
+
+route_pinned_hosts() {
+  local action="$1"
+  local gw="${2:-}"
+  local ip
+
+  [[ -f "$PINNED_HOSTS" ]] || return 0
+  while IFS= read -r ip; do
+    ip="${ip%%#*}"
+    ip="${ip#"${ip%%[![:space:]]*}"}"
+    ip="${ip%"${ip##*[![:space:]]}"}"
+    [[ -z "$ip" ]] && continue
+    [[ "$ip" =~ '^[0-9]+(\.[0-9]+){3}$' ]] || continue
+    if [[ "$action" == "add" ]]; then
+      route_add_host "$ip" "$gw"
+    else
+      route_delete_host "$ip"
+    fi
+  done < "$PINNED_HOSTS"
+}
+
+flush_dns_cache() {
+  dscacheutil -flushcache >/dev/null 2>&1 || true
+}
+
+show_route() {
+  local label="$1"
+  local ip="$2"
+  local out
+
+  out="$(route -n get "$ip" 2>/dev/null | awk '
+    /gateway:/ {gw=$2}
+    /interface:/ {iface=$2}
+    END {
+      if (gw == "") gw="-";
+      if (iface == "") iface="-";
+      printf "gateway=%s interface=%s", gw, iface;
+    }'
+  )"
+  printf "  %-18s %-15s %s\n" "$label" "$ip" "$out"
+}
+
+exit_mode_hint() {
+  local iface
+  iface="$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')"
+  if [[ "$iface" != utun* ]]; then
+    warn "Default route is not a Tailscale utun interface. Enable your Tailscale Exit Node first if you expect exit-mode behavior."
+  fi
+}
+
+direct_route_count() {
+  netstat -rn -f inet 2>/dev/null | awk '$2 ~ /^[0-9]+(\.[0-9]+){3}$/ && $NF ~ /^en[0-9]/ {count++} END {print count + 0}'
+}
+
+tunnelguard_hint() {
+  local applied running
+  applied="$(defaults read com.amirhpcom.tunnelguard TunnelGuardRulesApplied 2>/dev/null || print -r -- unknown)"
+  if pgrep -x TunnelGuard >/dev/null 2>&1; then
+    running=yes
+  else
+    running=no
+  fi
+  print -r -- "TunnelGuard: running=$running rulesApplied=$applied"
+  if [[ "$applied" == "1" ]]; then
+    warn "TunnelGuard UI rules are still saved/applied. TailGateway removes active route-table bridges but does not delete saved TunnelGuard UI rules."
+  fi
+}
+
+tailscale_dns_pref() {
+  local value="$1"
+  defaults write io.tailscale.ipn.macos UseTailscaleDNSSettings -bool "$value" >/dev/null 2>&1 || true
+  defaults write W5364U7YZB.group.io.tailscale.ipn.macos UseTailscaleDNSSettings -bool "$value" >/dev/null 2>&1 || true
+  killall cfprefsd >/dev/null 2>&1 || true
+}
+
+tailscale_dns_hint() {
+  local value
+  value="$(defaults read W5364U7YZB.group.io.tailscale.ipn.macos UseTailscaleDNSSettings 2>/dev/null || print -r -- unknown)"
+  print -r -- "Tailscale DNS preference: $value"
+}
+
+last_mode_hint() {
+  local mode
+  mode="$(read_last_mode)"
+  case "$mode" in
+    china)
+      print -r -- "Last tail mode: on"
+      ;;
+    usa)
+      print -r -- "Last tail mode: off"
+      ;;
+    "")
+      print -r -- "Last tail mode: not recorded"
+      ;;
+    *)
+      print -r -- "Last tail mode: unknown"
+      ;;
+  esac
+}
+
+dns_split_hint() {
+  if [[ -f /etc/resolver/baidu.com && -f /etc/resolver/bilibili.com && -f /etc/resolver/cn ]]; then
+    print -r -- "DNS split: installed"
+  else
+    print -r -- "DNS split: not installed"
+  fi
+}
+
+cleanup_prefix_host_routes() {
+  local prefix pattern
+  local -a hosts
+
+  for prefix in "$@"; do
+    hosts=("${(@f)$(netstat -rn -f inet 2>/dev/null | awk -v p="$prefix" '$1 ~ ("^" p "\\.") && $2 ~ /^[0-9]+(\.[0-9]+){3}$/ && $NF ~ /^en[0-9]/ {print $1}')}")
+    local host
+    for host in "${hosts[@]}"; do
+      route_delete_host "$host"
+    done
+  done
+}
+
+status_report() {
+  log "Status"
+  exit_mode_hint
+  print -r -- "Local direct route count: $(direct_route_count)"
+  tailscale_dns_hint
+  last_mode_hint
+  dns_split_hint
+  print -r -- ""
+  print -r -- "Route samples:"
+  show_route "default" "8.8.8.8"
+  show_route "ZCode API" "128.14.14.141"
+  show_route "BigModel" "119.23.85.51"
+  show_route "WeChat" "43.130.30.247"
+  show_route "WeChat HK" "129.226.106.198"
+  show_route "Apple" "17.253.144.10"
+  show_route "Baidu" "39.156.66.10"
+}
+
+mode_china() {
+  local gw="${1:-}"
+  local dns="${2:-$DNS_DEFAULT}"
+
+  if [[ "$gw" == "--help" || "$gw" == "-h" || "$gw" == "help" ]]; then
+    usage
+    return 0
+  fi
+
+  if [[ -z "$gw" ]]; then
+    gw="$(detect_gateway)" || die "Could not detect the local gateway. Run: tailgatewayctl on <gateway-ip>"
+  fi
+  [[ "$gw" =~ '^[0-9]+(\.[0-9]+){3}$' ]] || die "Invalid gateway IP: $gw"
+  [[ "$dns" =~ '^[0-9]+(\.[0-9]+){3}$' ]] || die "Invalid DNS IP: $dns"
+
+  log "Tail Mode On: whitelist traffic bypasses Tailscale through the local gateway."
+  log "Using local gateway: $gw"
+  log "Using local DNS for dynamic Apple/iCloud routes: $dns"
+  exit_mode_hint
+  tailscale_dns_pref false
+  record_mode china
+
+  run_helper "$CN_APPLY" "$gw"
+  if [[ -f /etc/resolver/baidu.com && -f /etc/resolver/bilibili.com && -f /etc/resolver/cn ]]; then
+    log "DNS split is already installed."
+  elif run_helper "$CN_DNS_APPLY" "$CN_DNS_DOMAINS" "$dns" "119.29.29.29"; then
+    :
+  else
+    warn "Could not install DNS split without admin authorization. Applying route-only CDN fallback instead."
+  fi
+  run_helper "$CN_CDN_APPLY" "$gw" "$CN_CDN_DOMAINS" "$CN_CDN_STATE" "$dns"
+  run_helper "$APPLE_APPLY" "$gw" "$dns"
+  run_helper "$WECHAT_APPLY" "$gw"
+
+  route_pinned_hosts add "$gw"
+
+  flush_dns_cache
+  record_mode china
+  print -r -- ""
+  status_report
+}
+
+mode_usa() {
+  local dns="${1:-$DNS_DEFAULT}"
+
+  if [[ "$dns" == "--help" || "$dns" == "-h" || "$dns" == "help" ]]; then
+    usage
+    return 0
+  fi
+  [[ "$dns" =~ '^[0-9]+(\.[0-9]+){3}$' ]] || die "Invalid DNS IP: $dns"
+
+  log "Tail Mode Off: remove local bridge routes so traffic follows Tailscale."
+  log "Using local DNS only to find dynamic Apple/iCloud host routes to remove: $dns"
+  exit_mode_hint
+  tailscale_dns_pref true
+  record_mode usa
+
+  run_helper "$CN_REMOVE"
+  if [[ "${TAILGATEWAY_AUTOSTART:-0}" == "1" ]]; then
+    log "Autostart mode: skipping DNS split removal to avoid a password prompt."
+  elif run_helper "$CN_DNS_REMOVE"; then
+    :
+  else
+    warn "Could not remove DNS split without admin authorization. Continuing route cleanup."
+  fi
+  run_helper "$CN_CDN_REMOVE" "$CN_CDN_STATE"
+  run_helper "$APPLE_REMOVE" "$dns"
+  run_helper "$WECHAT_REMOVE"
+
+  route_pinned_hosts delete
+
+  cleanup_prefix_host_routes 17 "${WECHAT_PREFIXES[@]}"
+  flush_dns_cache
+  record_mode usa
+  print -r -- ""
+  status_report
+}
+
+restore_last_mode() {
+  local mode
+  mode="$(read_last_mode)"
+
+  case "$mode" in
+    china)
+      log "Restoring last Tail Mode: on"
+      mode_china "$@"
+      ;;
+    usa)
+      log "Restoring last Tail Mode: off"
+      mode_usa "$@"
+      ;;
+    "")
+      log "No previous bridge mode recorded. Nothing to restore."
+      status_report
+      ;;
+    *)
+      warn "Unknown last bridge mode: $mode"
+      status_report
+      ;;
+  esac
+}
+
+remember_mode() {
+  local mode="${1:-}"
+  case "$mode" in
+    china|on)
+      record_mode china
+      log "Recorded Tail Mode: on"
+      ;;
+    usa|off)
+      record_mode usa
+      log "Recorded Tail Mode: off"
+      ;;
+    *)
+      die "Usage: tailgatewayctl remember on|off"
+      ;;
+  esac
+}
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  tailgatewayctl on [gateway-ip] [local-dns]
+    Turn Tail Mode on. Whitelist traffic bypasses Tailscale through the local gateway.
+    Everything else stays on your Tailscale Exit Node.
+
+  tailgatewayctl off [local-dns]
+    Turn Tail Mode off. Local bridge routes are removed, so traffic follows Tailscale.
+    Saved helper files are not deleted.
+
+  tailgatewayctl status
+    Show the current routing state.
+
+  tailgatewayctl restore
+    Restore whichever Tail Mode state was last recorded.
+
+Defaults:
+  gateway-ip is auto-detected from the non-utun default route.
+  local-dns defaults to 223.5.5.5, or TAILGATEWAY_DNS if set.
+USAGE
+}
+
+main() {
+  local mode
+  if (( $# > 0 )); then
+    mode="$1"
+    shift
+  else
+    mode="status"
+  fi
+
+  case "$mode" in
+    on|tail-on|enable)
+      mode_china "$@"
+      ;;
+    off|tail-off|disable)
+      mode_usa "$@"
+      ;;
+    status|check)
+      status_report
+      ;;
+    restore|auto|last)
+      restore_last_mode "$@"
+      ;;
+    remember)
+      remember_mode "$@"
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

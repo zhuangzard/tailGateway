@@ -1,0 +1,31 @@
+#!/bin/zsh
+set -u
+
+APP_SUPPORT="${TAILGATEWAY_SUPPORT_DIR:-$HOME/Library/Application Support/TailGateway}"
+CTL="$APP_SUPPORT/bin/tailgatewayctl"
+LOG="$HOME/Library/Logs/TailGateway.autostart.log"
+
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+{
+  echo
+  echo "===== $(date '+%Y-%m-%d %H:%M:%S') TailGateway autostart ====="
+  echo "Waiting for network/Tailscale to settle..."
+} >> "$LOG"
+
+sleep 20
+
+for attempt in {1..6}; do
+  {
+    echo "Attempt $attempt"
+    TAILGATEWAY_AUTOSTART=1 "$CTL" restore
+  } >> "$LOG" 2>&1
+
+  if "$CTL" status >/dev/null 2>&1; then
+    exit 0
+  fi
+
+  sleep 10
+done
+
+exit 1
